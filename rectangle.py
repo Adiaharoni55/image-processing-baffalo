@@ -283,6 +283,72 @@ def merge_similar_lines(lines, theta_threshold=0.05, row_threshold=1):
     
     return merged_lines
 
+def detect_and_mark_corners(source):
+    gray = cv2.threshold(source, 130, 255, cv2.THRESH_BINARY)[1]
+
+    corners_scale = cv2.cornerHarris(gray, 3, 3, 0.05)
+    corners_scale = cv2.dilate(corners_scale, None)
+
+    corners_normalized = cv2.normalize(corners_scale, None, 0, 1, cv2.NORM_MINMAX)
+
+    corners = (corners_normalized * 255).astype(np.uint8)
+    corners = cv2.threshold(corners, np.mean(corners), 255, cv2.THRESH_BINARY)[1]
+    
+    kernel = np.ones((3, 3), np.uint8)
+    reduce_noise = cv2.morphologyEx(corners, cv2.MORPH_OPEN, kernel)
+    return cv2.erode(reduce_noise, kernel, iterations=1)
+
+
+def draw_rectangle(image, intersections):
+    # Convert grayscale to BGR
+    output_img = cv2.cvtColor(image.copy(), cv2.COLOR_GRAY2BGR)
+    
+    points = np.array([
+        intersections['top_left'],
+        intersections['top_right'],
+        intersections['bottom_right'],
+        intersections['bottom_left']
+    ], dtype=np.int32).reshape((-1, 1, 2))
+    
+    # Draw green rectangle
+    cv2.polylines(output_img, [points], True, (0, 255, 0), 2)
+    
+    return output_img
+
+
+def get_line_points(x1, y1, x2, y2):
+    """Get all integer points along a line using Bresenham's algorithm."""
+    points = []
+    dx = abs(x2 - x1)
+    dy = abs(y2 - y1)
+    x, y = x1, y1
+    
+    sx = 1 if x2 > x1 else -1
+    sy = 1 if y2 > y1 else -1
+    
+    if dx > dy:
+        err = dx / 2.0
+        while x != x2:
+            points.append((x, y))
+            err -= dy
+            if err < 0:
+                y += sy
+                err += dx
+            x += sx
+    else:
+        err = dy / 2.0
+        while y != y2:
+            points.append((x, y))
+            err -= dx
+            if err < 0:
+                x += sx
+                err += dy
+            y += sy
+            
+    points.append((x, y))
+    return points
+
+
 
 def is_parallel(theta1, theta2, threshold_degrees=17):
     theta1_deg = np.degrees(theta1)
@@ -373,75 +439,83 @@ def is_perpendicular(line1, line2, shape_matrix, window_size=20):
     # Check perpendicularity
     angle_diff = abs(local_theta1 - local_theta2) % np.pi
     # Change threshold from 0.2 radians to 15 degrees converted to radians
-    threshold_degrees = 15
+    threshold_degrees = 20
     threshold_radians = np.deg2rad(threshold_degrees)
     is_perp = abs(angle_diff - np.pi/2) <= threshold_radians
     
     return is_perp, intersection
 
 
-def detect_and_mark_corners(source):
-    gray = cv2.threshold(source, 130, 255, cv2.THRESH_BINARY)[1]
-
-    corners_scale = cv2.cornerHarris(gray, 3, 3, 0.05)
-    corners_scale = cv2.dilate(corners_scale, None)
-
-    corners_normalized = cv2.normalize(corners_scale, None, 0, 1, cv2.NORM_MINMAX)
-
-    corners = (corners_normalized * 255).astype(np.uint8)
-    corners = cv2.threshold(corners, np.mean(corners), 255, cv2.THRESH_BINARY)[1]
+def is_valid_edge(corner_set, point1, point2, threshold=4, debug=False):
+    # Get all points along the line
+    x1, y1 = point1
+    x2, y2 = point2
+    line_points = get_line_points(x1, y1, x2, y2)
     
-    kernel = np.ones((3, 3), np.uint8)
-    return cv2.erode(corners, kernel, iterations=1)
-
-
-def draw_rectangle(image, intersections):
-    # Convert grayscale to BGR
-    output_img = cv2.cvtColor(image.copy(), cv2.COLOR_GRAY2BGR)
+    # Count corner points along the line (excluding endpoints)
+    corner_count = 0
     
-    points = np.array([
-        intersections['top_left'],
-        intersections['top_right'],
-        intersections['bottom_right'],
-        intersections['bottom_left']
-    ], dtype=np.int32).reshape((-1, 1, 2))
+    for point in line_points[1:-1]:  # Skip first and last points
+        if point in corner_set:
+            corner_count += 1
+            if debug:
+                print(f"Found corner at point {point}")
+            if corner_count > threshold:
+                if debug:
+                    print(f"Too many corners found ({corner_count} > {threshold})")
+                return False
     
-    # Draw green rectangle
-    cv2.polylines(output_img, [points], True, (0, 255, 0), 2)
+    if debug:
+        print(f"Edge from {point1} to {point2} has {corner_count} corners")
+        if corner_count <= threshold:
+            print("Edge is valid")
+        else:
+            print("Edge is invalid")
     
-    return output_img
+    return True
 
 
-
-def find_possible_rectangles_lines(lines, corners, img, min_width=10, max_width=13, min_height=35, max_height=45):
-    def is_corner(intersection_point, corners, threshold=1):
-        possibilities = [
-            (intersection_point[0] + dx, intersection_point[1] + dy)
-            for dx in range(-threshold, threshold + 1)
-            for dy in range(-threshold, threshold + 1)
-        ]
-        return any(p in corners for p in possibilities)
-
+def find_possible_rectangles_lines(lines, corners_set, img, min_width=10, max_width=14, min_height=34, max_height=44, debug=False):
+    def is_corner(intersection_point, corners, threshold=2):
+        x, y = intersection_point
+        for dx in range(-threshold, threshold + 1):
+            for dy in range(-threshold, threshold + 1):
+                if (x + dx, y + dy) in corners:
+                    return True
+        return False
+    
     def calc_distance(point1, point2):
         x1, y1 = point1
         x2, y2 = point2
         return ((x2 - x1)**2 + (y2 - y1)**2)**0.5
     
     lines = set(lines)  # Convert to set for O(1) removal
+    if debug:
+        print(f"Starting search with {len(lines)} lines")
 
     for top_line in lines:
-        remaining_lines = lines - {top_line}  # Remove top line from consideration
+        if debug:
+            print("\nTrying new top line:", top_line)
         
-        # Get all perpendicular lines in one pass
+        lines = lines - {top_line}
+        remaining_lines = lines.copy()
+
         perpendicular_lines = []
         for perp in remaining_lines:
             is_prep, intersection = is_perpendicular(top_line, perp, img)
-            if is_prep and is_corner(intersection, corners):
+            if is_prep and is_corner(intersection, corners_set):
                 perpendicular_lines.append((perp, intersection))
-                
+        
+        if debug:
+            print(f"Found {len(perpendicular_lines)} perpendicular lines")
+        
         # Early exit if not enough perpendicular lines
         if len(perpendicular_lines) < 2 or len(perpendicular_lines) > 50:
+            if debug:
+                print("Skipping: Invalid number of perpendicular lines")
             continue
+
+        is_width = True
 
         # Check all possible pairs of perpendicular lines
         n = len(perpendicular_lines)
@@ -451,53 +525,99 @@ def find_possible_rectangles_lines(lines, corners, img, min_width=10, max_width=
             for j in range(i+1, n):
                 right_line, top_right = perpendicular_lines[j]
                 
+                if debug:
+                    print(f"\nChecking left line {left_line} and right line {right_line}")
+                
                 if not is_parallel(left_line[1], right_line[1]):
+                    if debug:
+                        print("Failed: Lines not parallel")
                     continue
 
-                width = calc_distance(top_left, top_right)
-                if not (min_width <= width <= max_width):
+                top_line_distance = calc_distance(top_left, top_right)
+                if not (min_width <= top_line_distance <= max_width):
+                    if min_height <= top_line_distance <= max_height:
+                        is_width = False
+                    else:
+                        if debug:
+                            print(f"distance between top_left and top_right out of range: {top_line_distance}")
+                        continue                    
+
+
+                if not is_valid_edge(corners_set, top_left, top_right):
+                    if debug:
+                        print("Failed: Invalid top edge")
                     continue
 
                 # Search for bottom line
                 for bottom_line in remaining_lines - {left_line, right_line}:
-                    if not is_parallel(bottom_line[1], top_line[1]):
-                        continue
-
-                    is_perp, bottom_left = is_perpendicular(bottom_line, left_line, img)
-                    if not is_perp or not is_corner(bottom_left, corners):
-                        continue
+                    if debug:
+                        print(f"\nTrying bottom line: {bottom_line}")
                     
-                    height = calc_distance(top_left, bottom_left)
-                    if not (min_height <= height <= max_height) or not 400 <= height*width <= 550:
+                    if not is_parallel(bottom_line[1], top_line[1]):
+                        if debug:
+                            print("Failed: Bottom line not parallel to top line")
                         continue
 
-                    is_perp, bottom_right = is_perpendicular(bottom_line, right_line, img)
-                    if not is_perp or not is_corner(bottom_right, corners):
+                    is_perp1, bottom_left = is_perpendicular(bottom_line, left_line, img)
+                    is_perp2, bottom_right = is_perpendicular(bottom_line, right_line, img)
+
+                    if not is_perp1 or not is_perp2:
+                        if debug:
+                            print("Failed: Bottom corners not perpendicular")
                         continue
 
-                    height2 = calc_distance(top_right, bottom_right)
-                    if not (min_height <= height2 <= max_height):
+                    if not is_corner(bottom_right, corners_set) or not is_corner(bottom_left, corners_set):
+                        if debug:
+                            print("Failed: Bottom corners not detected")
                         continue
 
-                    bottom_width = calc_distance(bottom_left, bottom_right)
-                    if min_width <= bottom_width <= max_width:
-                        return (
-                            {
-                                "top_line": top_line,
-                                "bottom_line": bottom_line,
-                                "right_line": right_line,
-                                "left_line": left_line
-                            },
-                            {
-                                "top_left": top_left,
-                                "top_right": top_right,
-                                "bottom_left": bottom_left,
-                                "bottom_right": bottom_right
-                            }
-                        )
+                    left_line_distance = calc_distance(top_left, bottom_left)
+                    right_line_distance = calc_distance(top_right, bottom_right)
+                    if debug:
+                        print(f"Heights: {left_line_distance:.2f}, {right_line_distance:.2f}")
+                        print(f"Area: {left_line_distance*top_line_distance:.2f}")
 
-    print("No rectangles found")               
+                    if is_width and (not (min_height <= left_line_distance <= max_height) or not (min_height <= right_line_distance <= max_height) or not (400 <= left_line_distance*top_line_distance <= 550)):
+                        if debug:
+                            print("Failed: Invalid left_line_distance or right_line_distance or area")
+                        continue
+
+                    if not is_width and (not (min_width <= right_line_distance <= max_width)):
+                        if debug:
+                            print("Failed: Invalid right side height")
+                        continue
+
+                    bottom_line_dis = calc_distance(bottom_left, bottom_right)
+                    if debug:
+                        print(f"Bottom line distance: {bottom_line_dis:.2f}")
+                    
+                    if (is_width and (min_width <= bottom_line_dis <= max_width)) or (not is_width and (min_height <= bottom_line_dis <= max_height)):
+                        if  is_valid_edge(corners_set, bottom_left, top_left) and is_valid_edge(corners_set, bottom_right, top_right) and is_valid_edge(corners_set, bottom_left, bottom_right):
+
+                            if debug:
+                                print("SUCCESS: Rectangle found!")
+
+                            return (
+                                {
+                                    "top_line": top_line,
+                                    "bottom_line": bottom_line,
+                                    "right_line": right_line,
+                                    "left_line": left_line
+                                },
+                                {
+                                    "top_left": top_left,
+                                    "top_right": top_right,
+                                    "bottom_left": bottom_left,
+                                    "bottom_right": bottom_right
+                                }
+                            )
+                    else:
+                        if debug:
+                            print("Failed: Invalid edges or bottom width")
+
     return None, None
+
+
 
 
 input_image = cv2.imread('baffalo.png', cv2.IMREAD_GRAYSCALE)
@@ -506,30 +626,25 @@ if input_image is None:
     exit()
 
 rows, cols = input_image.shape[:2]
+M = cv2.getRotationMatrix2D((cols/2, rows/2), 50, 1)
+rotated = cv2.warpAffine(input_image, M, (cols, rows))
 
-for i in range(190, 360, 10):
-    M = cv2.getRotationMatrix2D((cols/2, rows/2), i, 1)
-    rotated = cv2.warpAffine(input_image, M, (cols, rows))
-    enhanced_image = clean_and_sharpen_image(rotated)
-    edges = cv2.Canny(enhanced_image, 100, 200)
-    lines = find_lines_cv2(edges)
-    merged = merge_similar_lines(lines)
+enhanced_image = clean_and_sharpen_image(rotated)
+edges = cv2.Canny(enhanced_image, 100, 200)
+lines = find_lines_cv2(edges)
+merged = merge_similar_lines(lines)
 
-    corner_mask = detect_and_mark_corners(enhanced_image)
-    corners_lst = np.where((corner_mask == 255))
-    corners_lst = list(set(zip(corners_lst[1], corners_lst[0]))) 
-
-
-    rec_lines, rec_intersections = find_possible_rectangles_lines(merged, corners_lst, input_image)
-
-    if rec_intersections:
-        rec_img = draw_rectangle(rotated, rec_intersections)
-        
-        plt.imshow(rec_img, cmap='gray')
-        plt.axis('off')
-        plt.show()
-    else:
-        print(f"ERROR in {i}")
+corner_mask = detect_and_mark_corners(enhanced_image)
+corners_lst = np.where((corner_mask == 255))
+corners_lst = list(set(zip(corners_lst[1], corners_lst[0]))) 
 
 
+rec_lines, rec_intersections = find_possible_rectangles_lines(merged, corners_lst, input_image)
+
+if rec_intersections:
+    rec_img = draw_rectangle(rotated, rec_intersections)
+    
+    plt.imshow(rec_img, cmap='gray')
+    plt.axis('off')
+    plt.show()
 

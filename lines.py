@@ -3,6 +3,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 
+
+
+def detect_and_mark_corners(source):
+    gray = cv2.threshold(source, 130, 255, cv2.THRESH_BINARY)[1]
+
+    corners_scale = cv2.cornerHarris(gray, 3, 3, 0.05)
+    corners_scale = cv2.dilate(corners_scale, None)
+
+    corners_normalized = cv2.normalize(corners_scale, None, 0, 1, cv2.NORM_MINMAX)
+
+    corners = (corners_normalized * 255).astype(np.uint8)
+    corners = cv2.threshold(corners, np.mean(corners), 255, cv2.THRESH_BINARY)[1]
+    
+    kernel = np.ones((3, 3), np.uint8)
+    return cv2.erode(corners, kernel, iterations=1)
+
+
 def find_lines_through_rectangle(lines, corners, tolerance=2.0):
     def point_to_line_distance(point, rho, theta):
         """Calculate distance from a point to a line in rho-theta form"""
@@ -201,17 +218,6 @@ def clean_and_sharpen_image(img, brightness_adjustments=[100, 70]):
     filtered_img = apply_noise_reduction_sequence(filtered_img)
     return np.uint8(np.clip(filtered_img, 0, 255))
 
-def detect_edges(image, low_threshold=100, high_threshold=200):
-    
-    # Optional: Apply Gaussian blur to reduce noise
-    enhanced_image = clean_and_sharpen_image(image)
-
-    
-    # Apply Canny edge detection
-    edges = cv2.Canny(enhanced_image, low_threshold, high_threshold)
-    
-    return edges
-
 def find_lines_cv2(img_edges, min_threshold_ratio=0.1, max_threshold_ratio=0.25):
     # Apply HoughLines with optimal parameters
     lines = cv2.HoughLines(img_edges, rho=1, theta=np.pi/180, threshold=35)
@@ -302,7 +308,6 @@ def merge_similar_lines(lines, theta_threshold=0.05, row_threshold=1):
     
     return merged_lines
 
-
 def is_parallel(theta1, theta2, threshold_degrees=17):
     theta1_deg = np.degrees(theta1)
     theta2_deg = np.degrees(theta2)
@@ -312,8 +317,6 @@ def is_parallel(theta1, theta2, threshold_degrees=17):
     opp_dir = abs(diff - 180) <= threshold_degrees
     
     return same_dir or opp_dir
-
-
 
 def is_perpendicular(line1, line2, shape_matrix, window_size=20):
     """
@@ -397,13 +400,20 @@ def is_perpendicular(line1, line2, shape_matrix, window_size=20):
     # Check perpendicularity
     angle_diff = abs(local_theta1 - local_theta2) % np.pi
     # Change threshold from 0.2 radians to 15 degrees converted to radians
-    threshold_degrees = 15
+    threshold_degrees = 20
     threshold_radians = np.deg2rad(threshold_degrees)
     is_perp = abs(angle_diff - np.pi/2) <= threshold_radians
     
     return is_perp, intersection
 
 
+def is_corner(intersection_point, corners, threshold=2):
+    x, y = intersection_point
+    for dx in range(-threshold, threshold + 1):
+        for dy in range(-threshold, threshold + 1):
+            if (x + dx, y + dy) in corners:
+                return True
+    return False
 
 
 input_image = cv2.imread('baffalo.png', cv2.IMREAD_GRAYSCALE)
@@ -412,50 +422,65 @@ if input_image is None:
     exit()
 
 rows, cols = input_image.shape[:2]
-M = cv2.getRotationMatrix2D((cols/2, rows/2), 90, 1)
+M = cv2.getRotationMatrix2D((cols/2, rows/2), 50, 1)
 input_image = cv2.warpAffine(input_image, M, (cols, rows))
 
-edges = detect_edges(input_image)
+enhanced_image = clean_and_sharpen_image(input_image)
+edges = cv2.Canny(enhanced_image, 100, 200)
 
 lines = find_lines_cv2(edges)
 
 merged = merge_similar_lines(lines)
-print(len(merged))
 
 
-corners = {
-        'top_left': (218, 48),
-        'top_right': (217, 37),
-        'bottom_left': (256,46),
-        'bottom_right': (257, 35)
-}
+corner_mask = detect_and_mark_corners(enhanced_image)
+corners_lst = np.where((corner_mask == 255))
+corners_lst = list(set(zip(corners_lst[1], corners_lst[0]))) 
 
-matching_lines = find_lines_through_rectangle(merged, corners, tolerance=2.0)
+lines_to_chack = [merged[60], merged[115], merged[351], merged[350]]
 
-
-# # # Apply the function
-# result = draw_corners_on_rotated_image(corners, input_image)
+# # Display results
+# plt.imshow(edges, cmap='gray')
+# plt.axis('off')
+# plt.show()
 
 
-if matching_lines:
-    lines_to_chack = [merged[161], merged[25], merged[91], merged[90]]
-    result = draw_lines_from_hough(input_image, lines_to_chack)
-    # is_perp, intersection = debug_perpendicularity_hough(lines_to_chack[0], lines_to_chack[2], input_image)
-    if not is_parallel(lines_to_chack[0][1], lines_to_chack[1][1]):
-        print("ERROR! NOT PERALLEL 0, 1", lines_to_chack[0], lines_to_chack[1])
-    if not is_parallel(lines_to_chack[2][1], lines_to_chack[3][1]):
-        print("ERROR! NOT PERALLEL 2, 3")
-    for i in [0, 1]:
-        for j in [2, 3]:
-            is_perp, intersection = is_perpendicular(lines_to_chack[i], lines_to_chack[j], input_image)
-            if not is_perp:
-                print("ERROR! NOT PERPENDICULAR", i, j)
+
+# corners = {
+#         'top_left': (120, 16),
+#         'top_right': (129, 21),
+#         'bottom_left': (106,54),
+#         'bottom_right': (118, 58)
+# }
+
+# matching_lines = find_lines_through_rectangle(merged, corners, tolerance=2.0)
 
 
-    result = draw_lines_from_hough(input_image, lines_to_chack)
+# if matching_lines:
+#     lines_to_chack = [merged[325], merged[288], merged[11], merged[14]]
+#     result = draw_lines_from_hough(input_image, lines_to_chack)
+#     # is_perp, intersection = debug_perpendicularity_hough(lines_to_chack[0], lines_to_chack[2], input_image)
+#     if not is_parallel(lines_to_chack[0][1], lines_to_chack[1][1]):
+#         print("ERROR! NOT PERALLEL 0, 1", lines_to_chack[0], lines_to_chack[1])
+#     if not is_parallel(lines_to_chack[2][1], lines_to_chack[3][1]):
+#         print("ERROR! NOT PERALLEL 2, 3")
+#     for i in [0, 1]:
+#         for j in [2, 3]:
+#             is_perp, intersection = is_perpendicular(lines_to_chack[i], lines_to_chack[j], input_image)
+#             if not is_perp:
+#                 print("ERROR! NOT PERPENDICULAR", i, j)
+#             if not is_corner(intersection, corners_lst):
+#                 print("ERROR! NOT CORNER", i, j)
 
-    # Display results
-    plt.imshow(result, cmap='gray')
-    plt.axis('off')
-    plt.show()
+#     # Display results
+#     plt.imshow(result, cmap='gray')
+#     plt.axis('off')
+#     plt.show()
 
+
+result = draw_lines_from_hough(input_image, lines_to_chack)
+
+# Display results
+plt.imshow(result, cmap='gray')
+plt.axis('off')
+plt.show()
