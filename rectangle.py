@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 
 def find_lines_through_rectangle(lines, corners, tolerance=2.0):
     def point_to_line_distance(point, rho, theta):
-        """Calculate distance from a point to a line in rho-theta form"""
         x, y = point
         # Distance formula: |rho - x*cos(theta) - y*sin(theta)|
         return abs(rho - x * np.cos(theta) - y * np.sin(theta))
@@ -59,16 +58,6 @@ def find_lines_through_rectangle(lines, corners, tolerance=2.0):
         return None
 
 def scale_contrast(image, scale_factor):
-        """
-        Adjusts image contrast by multiplying pixel values by a scale factor.
-
-        Args:
-            image: numpy array of the input image
-            scale_factor: multiplication factor for contrast adjustment
-
-        Returns:
-            numpy array with adjusted contrast, converted to uint8
-        """
         contrast_image = image * scale_factor
         clipped = np.clip(contrast_image, 0, 255)
         return np.uint8(clipped)
@@ -88,7 +77,6 @@ def clean_and_sharpen_image(img, brightness_adjustments=[100, 70]):
 
 
     def apply_noise_reduction_sequence(noisy_img):
-        """Apply progressive noise reduction with decreasing filter strength."""
         filtered_img = noisy_img.copy()
         for strength in range(1, 9):
             filtered_img = normalize_image_range(filtered_img)
@@ -102,31 +90,11 @@ def clean_and_sharpen_image(img, brightness_adjustments=[100, 70]):
 
 
     def shift_brightness(image, offset):
-        """
-        Shifts the brightness of an image by adding/subtracting a constant value.
-
-        Args:
-            image: numpy array of the input image
-            offset: brightness adjustment value (-255 to 255)
-
-        Returns:
-            numpy array with adjusted brightness, maintaining the original data type
-        """
         array_float = image.astype(float)
         clipped = np.clip(array_float + offset, 0, 255)
         return clipped.astype(image.dtype)
 
     def normalize_image_range(image):
-        """
-        Normalizes image to use full intensity range (0-255) by adjusting
-        brightness and contrast based on min/max values.
-
-        Args:
-            image: input grayscale image
-
-        Returns:
-            normalized image utilizing full intensity range
-        """
         matrix = np.array(image)
         min_val = int(np.min(matrix))
         max_val = int(np.max(matrix))
@@ -599,43 +567,67 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, ratio=0.2
 
 
 
-def main():
+def main(start_angle=0, end_angle=360, angle_step=125):
+    """
+    Args:
+        start_angle (int): Starting angle for rotation in degrees (default: 0)
+        end_angle (int): Ending angle for rotation in degrees (default: 360)
+        angle_step (int): Step size between rotations in degrees (default: 125)
+    
+    Works with 'baffalo.png' in current directory.
+    """
+    
+    # Load input image in grayscale
     input_image = cv2.imread('baffalo.png', cv2.IMREAD_GRAYSCALE)
     if input_image is None:
         print("Error: Could not read image file")
         exit()
     
+    # Get image dimensions for rotation
     rows, cols = input_image.shape[:2]
-    for i in range(0, 360, 1000):
+    
+    # Process image at different rotation angles
+    for i in range(start_angle, end_angle, angle_step): # Adjust this parameter for different rotation intervals
+        # Calculate and apply rotation matrix
         M = cv2.getRotationMatrix2D((cols/2, rows/2), i, 1)
         rotated = cv2.warpAffine(input_image, M, (cols, rows))
 
+        # Enhance image quality
         enhanced_image = clean_and_sharpen_image(rotated)
+        
+        # Detect edges and lines
         edges = cv2.Canny(enhanced_image, 100, 200)
         lines = find_hough_lines(edges)
         merged = merge_similar_lines(lines)
 
+        # Create kernel for edge dilation
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
 
+        # Dilate edges and convert to set of coordinates
         edges_dilated = cv2.dilate(edges, kernel, iterations=1)
         edges_lst = np.where(edges_dilated == 255)
         edges_set = set(zip(edges_lst[1], edges_lst[0]))
         
+        # Detect corners and convert to set of coordinates
         corner_mask = detect_and_mark_corners(enhanced_image)
         corners_lst = np.where((corner_mask == 255))
         corners_set = set(zip(corners_lst[1], corners_lst[0]))
 
+        # Find possible rectangles using detected features
         rec_lines, rec_intersections = find_possible_rectangles_lines(merged, corners_set, edges_set, input_image)
 
+        # Visualize results
         if rec_intersections:
             rec_img = mark_corners(rotated, rec_intersections)
             plt.title(f"Find 'l' in 'baffalo' in img with rotation of: {i}")
             plt.imshow(rec_img, cmap='gray')
             plt.axis('off')
             plt.show()
-
         else:
             print(f"no rectangles found in image")
 
+
+
 if __name__ == "__main__":
     main()
+    
