@@ -462,7 +462,19 @@ def is_valid_edge(corner_set, edges_set, point1, point2, threshold=4):
         
     return True, corner_count+edges_count
 
-def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width=9, max_width=14, min_height=34, max_height=44):
+def find_possible_rectangles_lines(lines, corners_set, edges_set, img, ratio=0.25, tolerance=0.1, min_side=9):
+    """
+    Find rectangles based on width-to-height ratio rather than absolute measurements.
+    
+    Args:
+        lines: Set of lines to process
+        corners_set: Set of corner points
+        edges_set: Set of edge points
+        img: Image array
+        ratio: Expected width-to-height ratio (width/height)
+        tolerance: Allowed deviation from the expected ratio
+        min_side: Minimum length for any side
+    """
     def is_corner(intersection_point, corners, threshold=2):
         x, y = intersection_point
         for dx in range(-threshold, threshold + 1):
@@ -476,10 +488,14 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width
         x2, y2 = point2
         return ((x2 - x1)**2 + (y2 - y1)**2)**0.5
     
+    def is_valid_ratio(width, height, expected_ratio, tolerance):
+        actual_ratio = width / height if height > width else height / width
+        expected_ratio = min(expected_ratio, 1/expected_ratio)  # Normalize ratio to be <= 1
+        return abs(actual_ratio - expected_ratio) <= tolerance
+
     lines = set(lines)  # Convert to set for O(1) removal
 
     for top_line in lines:
-        
         lines = lines - {top_line}
         remaining_lines = lines.copy()
 
@@ -492,12 +508,9 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width
             if valid_corner:
                 perpendicular_lines.append((perp, point))
         
-        
         # Early exit if not enough perpendicular lines
         if len(perpendicular_lines) < 2 or len(perpendicular_lines) > 50:
             continue
-
-        is_width = True
 
         # Check all possible pairs of perpendicular lines
         n = len(perpendicular_lines)
@@ -510,20 +523,18 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width
                 if not is_parallel(left_line[1], right_line[1]):
                     continue
 
-                top_line_distance = calc_distance(top_left, top_right)
-                if not (min_width <= top_line_distance <= max_width): # maybe not eisth, could be height 
-                    is_width = False
-                
-                    if not min_height <= top_line_distance <= max_height:
-                        continue                    
+                top_width = calc_distance(top_left, top_right)
+                if top_width < min_side:
+                    continue
+
                 sum_bad_points = 0
                 is_val, bad_points = is_valid_edge(corners_set, edges_set, top_left, top_right)
                 if not is_val:
                     continue
                 sum_bad_points += bad_points
+
                 # Search for bottom line
                 for bottom_line in remaining_lines - {left_line, right_line}:
-                    
                     if not is_parallel(bottom_line[1], top_line[1]):
                         continue
 
@@ -538,30 +549,22 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width
                     if not valid_bottom_right or not valid_bottom_left:
                         continue
 
-                    left_line_distance = calc_distance(top_left, bottom_left)
-                    right_line_distance = calc_distance(top_right, bottom_right)
+                    left_height = calc_distance(top_left, bottom_left)
+                    right_height = calc_distance(top_right, bottom_right)
+                    bottom_width = calc_distance(bottom_left, bottom_right)
 
-                    if is_width:
-                        if not (min_height <= left_line_distance <= max_height) or not (min_height <= right_line_distance <= max_height):
-                            continue
-
-                    else:
-                        if not (min_width <= right_line_distance <= max_width) or not (min_width <= left_line_distance <= max_width):
-                            continue
-
-                    bottom_line_dis = calc_distance(bottom_left, bottom_right)
-                    
-                    if is_width:
-                        if not min_width <= bottom_line_dis <= max_width:
-                            continue
-                    
-                    else:
-                        if not min_height <= bottom_line_dis <= max_height:
-                            continue
-                    
-                    if not (350 <= top_line_distance*left_line_distance) <= 550 or not (350 <= top_line_distance*right_line_distance <= 550) or not (350 <= bottom_line_dis*right_line_distance <= 550) or not ((350 <= bottom_line_dis*left_line_distance <= 550)):
+                    # Check minimum size
+                    if min(left_height, right_height, bottom_width) < min_side:
                         continue
-                    
+
+                    # Verify ratio for all sides
+                    if not (is_valid_ratio(top_width, left_height, ratio, tolerance) and 
+                          is_valid_ratio(bottom_width, right_height, ratio, tolerance) and
+                           is_valid_ratio(bottom_width, left_height, ratio, tolerance) and
+                           is_valid_ratio(top_width, right_height, ratio, tolerance)):
+                        continue
+
+                    # Check edges validity
                     is_val, bad_points = is_valid_edge(corners_set, edges_set, bottom_left, top_left)
                     if not is_val:
                         continue
@@ -571,7 +574,6 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width
                     if not is_val:
                         continue
                     sum_bad_points += bad_points
-
 
                     is_val, bad_points = is_valid_edge(corners_set, edges_set, bottom_left, bottom_right)
                     if not is_val:
@@ -596,43 +598,44 @@ def find_possible_rectangles_lines(lines, corners_set, edges_set, img, min_width
     return None, None
 
 
+
 def main():
     input_image = cv2.imread('baffalo.png', cv2.IMREAD_GRAYSCALE)
     if input_image is None:
         print("Error: Could not read image file")
         exit()
-
-    # rows, cols = input_image.shape[:2]
-    # M = cv2.getRotationMatrix2D((cols/2, rows/2), 0, 1)
-    # rotated = cv2.warpAffine(input_image, M, (cols, rows))
-
-    enhanced_image = clean_and_sharpen_image(input_image)
-    edges = cv2.Canny(enhanced_image, 100, 200)
-    lines = find_hough_lines(edges)
-    merged = merge_similar_lines(lines)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-
-    edges_dilated = cv2.dilate(edges, kernel, iterations=1)
-    edges_lst = np.where(edges_dilated == 255)
-    edges_set = set(zip(edges_lst[1], edges_lst[0]))
     
-    corner_mask = detect_and_mark_corners(enhanced_image)
-    corners_lst = np.where((corner_mask == 255))
-    corners_set = set(zip(corners_lst[1], corners_lst[0]))
+    rows, cols = input_image.shape[:2]
+    for i in range(0, 360, 1000):
+        M = cv2.getRotationMatrix2D((cols/2, rows/2), i, 1)
+        rotated = cv2.warpAffine(input_image, M, (cols, rows))
 
+        enhanced_image = clean_and_sharpen_image(rotated)
+        edges = cv2.Canny(enhanced_image, 100, 200)
+        lines = find_hough_lines(edges)
+        merged = merge_similar_lines(lines)
 
-    rec_lines, rec_intersections = find_possible_rectangles_lines(merged, corners_set, edges_set, input_image)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
 
+        edges_dilated = cv2.dilate(edges, kernel, iterations=1)
+        edges_lst = np.where(edges_dilated == 255)
+        edges_set = set(zip(edges_lst[1], edges_lst[0]))
+        
+        corner_mask = detect_and_mark_corners(enhanced_image)
+        corners_lst = np.where((corner_mask == 255))
+        corners_set = set(zip(corners_lst[1], corners_lst[0]))
 
-    if rec_intersections:
-        rec_img = mark_corners(input_image, rec_intersections)
-        plt.imshow(rec_img, cmap='gray')
-        plt.axis('off')
-        plt.show()
+        rec_lines, rec_intersections = find_possible_rectangles_lines(merged, corners_set, edges_set, input_image)
 
-    else:
-        print(f"no rectangles found in image")
+        if rec_intersections:
+            rec_img = mark_corners(rotated, rec_intersections)
+            plt.title(f"Find 'l' in 'baffalo' in img with rotation of: {i}")
+            plt.imshow(rec_img, cmap='gray')
+            plt.axis('off')
+            plt.show()
+
+        else:
+            print(f"no rectangles found in image")
 
 if __name__ == "__main__":
     main()
